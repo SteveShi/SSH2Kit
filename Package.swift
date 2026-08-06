@@ -23,8 +23,8 @@ let package = Package(
         ),
         .binaryTarget(
   name: "libssh2kit",
-  url: "https://github.com/SteveShi/libssh2-swift/releases/download/v1.3.11/libssh2kit.xcframework.zip",
-  checksum: "bbbd81ecabdace5dacf380c2b41b5e690ea93c45d23149e0819ca6741287322f"
+  url: "https://github.com/SteveShi/libssh2-swift/releases/download/v1.3.12/libssh2kit.xcframework.zip",
+  checksum: "65da3bd9cd0da7c1d90082bc242ff7a0bd7019c97c176803e51f28ec9664f7b6"
         )
     ]
 )
