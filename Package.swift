@@ -2,19 +2,19 @@
 import PackageDescription
 
 let package = Package(
-    name: "libssh2-swift",
+    name: "SSH2Kit",
     platforms: [
         .macOS(.v15)
     ],
     products: [
         .library(
-  name: "libssh2-swift",
-  targets: ["libssh2-swift"]
+  name: "SSH2Kit",
+  targets: ["SSH2Kit"]
         )
     ],
     targets: [
         .target(
-  name: "libssh2-swift",
+  name: "SSH2Kit",
   dependencies: ["Clibssh2"]
         ),
         .target(

@@ -1,10 +1,10 @@
-# libssh2-swift 中文文档
+# SSH2Kit 中文文档
 
 [English](README.md)
 
-`libssh2-swift` 是一个高内聚的 **SSH2 与 SFTP 服务** 的 Swift Package 封装包。
+`SSH2Kit` 是一个高内聚的 **SSH2 与 SFTP 服务** 的 Swift Package 封装包。
 
-它将底层的 C 静态库（`libssh2`、`openssl`）及头文件封装为二进制 XCFramework，并提供了底层的套接字连接、密钥凭据验证、已知主机库（Known Hosts）校验，以及开箱即用的 SFTP 文件交互 Swift API。
+它将底层的 C 静态库（`libssh2`、`AWS-LC` / `openssl`）及头文件封装为二进制 XCFramework，并提供了底层的套接字连接、密钥凭据验证、已知主机库（Known Hosts）校验，以及开箱即用的 SFTP 文件交互 Swift API。
 
 ---
 
@@ -23,11 +23,11 @@
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/SteveShi/libssh2-swift.git", from: "1.2.1")
+    .package(url: "https://github.com/SteveShi/SSH2Kit.git", from: "1.3.12")
 ]
 ```
 
-并在相应的 Target 中依赖 `"libssh2-swift"`。
+并在相应的 Target 中依赖 `"SSH2Kit"`。
 
 ---
 

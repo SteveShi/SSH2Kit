@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`libssh2-swift` is a Swift Package wrapper for SSH2 protocol and SFTP services. It provides high-level Swift APIs for SSH connections, authentication, and SFTP file operations while encapsulating the underlying C libraries (libssh2 and AWS-LC) as binary XCFrameworks.
+`SSH2Kit` is a Swift Package wrapper for SSH2 protocol and SFTP services. It provides high-level Swift APIs for SSH connections, authentication, and SFTP file operations while encapsulating the underlying C libraries (libssh2 and AWS-LC) as binary XCFrameworks.
 
 The package is Swift 6 concurrency-safe, using the actor model throughout to ensure thread-safe operations during async socket/SFTP operations.
 
@@ -24,7 +24,7 @@ The package is Swift 6 concurrency-safe, using the actor model throughout to ens
    - Headers in `Sources/Clibssh2/include/` (libssh2.h, libssh2_sftp.h, etc.)
    - Minimal shim.c for any required C glue code
 
-3. **libssh2-swift** (High-Level Swift APIs)
+3. **SSH2Kit** (High-Level Swift APIs)
    - Public Swift actors: `SSHSession` and `SFTPService`
    - Hides C pointer management, socket handling, and memory allocation
    - Provides Swift-native async/await interfaces

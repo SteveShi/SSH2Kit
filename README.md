@@ -1,10 +1,10 @@
-# libssh2-swift
+# SSH2Kit
 
 [中文版](README_zh.md)
 
-`libssh2-swift` is a highly cohesive Swift Package wrapper for the **SSH2 protocol and SFTP services**.
+`SSH2Kit` is a highly cohesive Swift Package wrapper for the **SSH2 protocol and SFTP services**.
 
-It encapsulates the underlying C static libraries (`libssh2` and `openssl` components) and headers as binary XCFrameworks, providing high-level Swift APIs for socket connection, credential verification, Known Hosts validation, and directory/file stream manipulations via SFTP.
+It encapsulates the underlying C static libraries (`libssh2` and `AWS-LC`/`openssl` components) and headers as binary XCFrameworks, providing high-level Swift APIs for socket connection, credential verification, Known Hosts validation, and directory/file stream manipulations via SFTP.
 
 ---
 
@@ -23,11 +23,11 @@ Add this package to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/SteveShi/libssh2-swift.git", from: "1.2.1")
+    .package(url: "https://github.com/SteveShi/SSH2Kit.git", from: "1.3.12")
 ]
 ```
 
-And depend on `"libssh2-swift"` in your targets.
+And depend on `"SSH2Kit"` in your targets.
 
 ---
 
