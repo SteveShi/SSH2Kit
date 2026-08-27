@@ -143,19 +143,19 @@ jobs:
           import PackageDescription
 
           let package = Package(
-              name: "libssh2-swift",
+              name: "SSH2Kit",
               platforms: [
                   .macOS(.v15)
               ],
               products: [
                   .library(
-                      name: "libssh2-swift",
-                      targets: ["libssh2-swift"]
+                      name: "SSH2Kit",
+                      targets: ["SSH2Kit"]
                   )
               ],
               targets: [
                   .target(
-                      name: "libssh2-swift",
+                      name: "SSH2Kit",
                       dependencies: ["Clibssh2"]
                   ),
                   .target(
@@ -164,7 +164,7 @@ jobs:
                   ),
                   .binaryTarget(
                       name: "libssh2kit",
-                      url: "https://github.com/SteveShi/libssh2-swift/releases/download/${NEXT_PKG_VERSION}/libssh2kit.xcframework.zip",
+                      url: "https://github.com/SteveShi/SSH2Kit/releases/download/${NEXT_PKG_VERSION}/libssh2kit.xcframework.zip",
                       checksum: "${CHECKSUM}"
                   )
               ]
