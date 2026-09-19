@@ -1,10 +1,20 @@
 import Foundation
 import Darwin
+import CryptoKit
 import libssh2
 
 public enum HostKeyStatus: Sendable {
-    case notFound
-    case mismatch
+    case notFound(keyFingerprint: String)
+    case mismatch(keyFingerprint: String)
+}
+
+public enum HostKeyFingerprint {
+    /// SHA-256 fingerprint of a raw host key, OpenSSH style (base64, no padding).
+    public static func sha256(of keyData: Data) -> String {
+        let digest = SHA256.hash(data: keyData)
+        let base64 = Data(digest).base64EncodedString()
+        return "SHA256:" + base64.trimmingCharacters(in: CharacterSet(charactersIn: "="))
+    }
 }
 
 public actor SSHSession {
@@ -59,7 +69,10 @@ public actor SSHSession {
         }
     }
 
-    public func withRawSession<T: Sendable>(_ body: @Sendable (OpaquePointer) throws -> T) throws -> T {
+    /// Internal escape hatch for in-package wrappers (`SFTPService`).
+    /// Not public by design: raw C pointer access bypasses the actor's
+    /// blocking-mode management, so it must stay inside this module.
+    func withRawSession<T: Sendable>(_ body: @Sendable (OpaquePointer) throws -> T) throws -> T {
         guard let session else { throw SSHError.notConnected }
         libssh2_session_set_blocking(session, 1)
         defer { libssh2_session_set_blocking(session, 0) }
@@ -113,7 +126,11 @@ public actor SSHSession {
             case .match:
                 break
             case let .notFound(keyData, keyType), let .mismatch(keyData, keyType):
-                let status: HostKeyStatus = if case .notFound = checkResult { .notFound } else { .mismatch }
+                let status: HostKeyStatus = if case .notFound = checkResult {
+                    .notFound(keyFingerprint: HostKeyFingerprint.sha256(of: keyData))
+                } else {
+                    .mismatch(keyFingerprint: HostKeyFingerprint.sha256(of: keyData))
+                }
                 pendingHostKey = keyData
                 pendingHostKeyType = keyType
                 pendingHost = host
@@ -143,7 +160,12 @@ public actor SSHSession {
         else {
             throw SSHError.hostKeyUnavailable
         }
-        let replace = status == .mismatch
+        let replace: Bool
+        if case .mismatch = status {
+            replace = true
+        } else {
+            replace = false
+        }
         try KnownHostsStore.addOrReplace(session: session, host: host, port: port, keyData: keyData, keyType: keyType, replace: replace)
         pendingHostKey = nil
         pendingHostKeyType = nil
@@ -314,17 +336,32 @@ public actor SSHSession {
             case .publicKey(let path, let passphrase):
                 let pubPath = path + ".pub"
                 let hasPub = FileManager.default.fileExists(atPath: pubPath)
-                let passphraseCString = passphrase?.utf8CString
-                let passphrasePtr = passphraseCString?.withUnsafeBufferPointer { $0.baseAddress }
-                let userauth = libssh2_userauth_publickey_fromfile_ex(
-                    session,
-                    username,
-                    UInt32(username.utf8.count),
-                    hasPub ? pubPath : nil,
-                    path,
-                    passphrasePtr
-                )
-                if userauth == 0 {
+                // The passphrase buffer is passed to libssh2 from inside
+                // withUnsafeBufferPointer — the pointer is only valid for the
+                // duration of the closure (use-after-scope otherwise).
+                let userauthResult: Int32
+                if let passphrase {
+                    userauthResult = passphrase.utf8CString.withUnsafeBufferPointer { ptr in
+                        libssh2_userauth_publickey_fromfile_ex(
+                            session,
+                            username,
+                            UInt32(username.utf8.count),
+                            hasPub ? pubPath : nil,
+                            path,
+                            ptr.baseAddress
+                        )
+                    }
+                } else {
+                    userauthResult = libssh2_userauth_publickey_fromfile_ex(
+                        session,
+                        username,
+                        UInt32(username.utf8.count),
+                        hasPub ? pubPath : nil,
+                        path,
+                        nil
+                    )
+                }
+                if userauthResult == 0 {
                     authenticated = true
                 }
             }
@@ -524,10 +561,10 @@ public enum SSHError: LocalizedError {
             return "Host key unavailable"
         case .hostKeyNotTrusted(let status):
             switch status {
-            case .notFound:
-                return "Host key not found. Confirmation required."
-            case .mismatch:
-                return "Host key mismatch. Confirmation required."
+            case .notFound(let fingerprint):
+                return "Host key not found (\(fingerprint)). Confirmation required."
+            case .mismatch(let fingerprint):
+                return "Host key mismatch (\(fingerprint)). Confirmation required."
             }
         }
     }

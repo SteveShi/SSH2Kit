@@ -92,8 +92,13 @@ public actor SFTPService {
 
 ```swift
 public enum HostKeyStatus: Sendable {
-    case notFound
-    case mismatch
+    case notFound(keyFingerprint: String)
+    case mismatch(keyFingerprint: String)
+}
+
+public enum HostKeyFingerprint {
+    /// 主机密钥的 SHA-256 指纹（OpenSSH 风格 `SHA256:<base64>`）
+    public static func sha256(of keyData: Data) -> String
 }
 
 public enum SSHAuth: Sendable {

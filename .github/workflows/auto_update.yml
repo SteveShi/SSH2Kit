@@ -25,17 +25,17 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Checkout Swift Package
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: 'stable'
 
       - name: Setup CMake
-        uses: jwlawson/actions-setup-cmake@v2
+        uses: jwlawson/actions-setup-cmake@0d6a7d60b009d01c9e7523be22153ff8f19460d3 # v2
 
       - name: Fetch Upstream Versions
         id: check-versions
@@ -43,6 +43,18 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+
+          # Resolve a tag to its commit SHA (dereferences annotated tags).
+          # Building from the SHA makes the produced binary auditable and
+          # detects moved/rewritten tags.
+          resolve_sha() {
+            local repo="$1" tag="$2"
+            local out
+            out=$(git ls-remote "https://github.com/${repo}.git" "refs/tags/${tag}" "refs/tags/${tag}^{}" || true)
+            local sha
+            sha=$(echo "$out" | awk '{print $1}' | tail -n 1)
+            echo "$sha"
+          }
 
           # Get latest stable release tag of libssh2
           LATEST_LIBSSH2=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/libssh2/libssh2/releases/latest | jq -r .tag_name)
@@ -56,34 +68,51 @@ jobs:
             LATEST_AWSLC=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/aws/aws-lc/tags | jq -r '.[0].name')
           fi
 
-          echo "Latest Upstream libssh2: $LATEST_LIBSSH2"
-          echo "Latest Upstream AWS-LC: $LATEST_AWSLC"
+          SHA_LIBSSH2=$(resolve_sha libssh2/libssh2 "$LATEST_LIBSSH2")
+          SHA_AWSLC=$(resolve_sha aws/aws-lc "$LATEST_AWSLC")
+          if [[ -z "$SHA_LIBSSH2" || -z "$SHA_AWSLC" ]]; then
+            echo "ERROR: could not resolve commit SHA for upstream tags" >&2
+            exit 1
+          fi
 
-          # Read current recorded versions
-          CURRENT_LIBSSH2=""
+          echo "Latest Upstream libssh2: $LATEST_LIBSSH2 ($SHA_LIBSSH2)"
+          echo "Latest Upstream AWS-LC: $LATEST_AWSLC ($SHA_AWSLC)"
+
+          # Read current recorded versions. Format: "<tag> <sha>".
+          # Legacy files containing only "<tag>" are treated as sha-less.
+          CURRENT_LIBSSH2_REC=""
+          CURRENT_AWSLC_REC=""
           if [[ -f upstream_libssh2.txt ]]; then
-            CURRENT_LIBSSH2=$(cat upstream_libssh2.txt)
+            CURRENT_LIBSSH2_REC=$(cat upstream_libssh2.txt)
           fi
-          CURRENT_AWSLC=""
           if [[ -f upstream_awslc.txt ]]; then
-            CURRENT_AWSLC=$(cat upstream_awslc.txt)
+            CURRENT_AWSLC_REC=$(cat upstream_awslc.txt)
           fi
+          read -r CURRENT_LIBSSH2 _ <<< "$CURRENT_LIBSSH2_REC"
+          read -r CURRENT_AWSLC _ <<< "$CURRENT_AWSLC_REC"
 
-          echo "Current libssh2: $CURRENT_LIBSSH2"
-          echo "Current AWS-LC: $CURRENT_AWSLC"
+          echo "Current libssh2: $CURRENT_LIBSSH2_REC"
+          echo "Current AWS-LC: $CURRENT_AWSLC_REC"
 
-          if [[ "$LATEST_LIBSSH2" != "$CURRENT_LIBSSH2" || "$LATEST_AWSLC" != "$CURRENT_AWSLC" ]]; then
+          NEW_LIBSSH2_REC="${LATEST_LIBSSH2} ${SHA_LIBSSH2}"
+          NEW_AWSLC_REC="${LATEST_AWSLC} ${SHA_AWSLC}"
+
+          if [[ "$CURRENT_LIBSSH2_REC" != "$NEW_LIBSSH2_REC" || "$CURRENT_AWSLC_REC" != "$NEW_AWSLC_REC" ]]; then
             echo "updates_available=true" >> "$GITHUB_OUTPUT"
             echo "latest_libssh2=$LATEST_LIBSSH2" >> "$GITHUB_OUTPUT"
             echo "latest_awslc=$LATEST_AWSLC" >> "$GITHUB_OUTPUT"
+            echo "sha_libssh2=$SHA_LIBSSH2" >> "$GITHUB_OUTPUT"
+            echo "sha_awslc=$SHA_AWSLC" >> "$GITHUB_OUTPUT"
           else
             if [[ "${{ github.event_name }}" == "push" || "${{ github.event.inputs.force }}" == "true" ]]; then
               echo "updates_available=true" >> "$GITHUB_OUTPUT"
+              echo "latest_libssh2=$LATEST_LIBSSH2" >> "$GITHUB_OUTPUT"
+              echo "latest_awslc=$LATEST_AWSLC" >> "$GITHUB_OUTPUT"
+              echo "sha_libssh2=$SHA_LIBSSH2" >> "$GITHUB_OUTPUT"
+              echo "sha_awslc=$SHA_AWSLC" >> "$GITHUB_OUTPUT"
             else
               echo "updates_available=false" >> "$GITHUB_OUTPUT"
             fi
-            echo "latest_libssh2=$CURRENT_LIBSSH2" >> "$GITHUB_OUTPUT"
-            echo "latest_awslc=$CURRENT_AWSLC" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Compile and Release
@@ -92,27 +121,31 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           LATEST_LIBSSH2: ${{ steps.check-versions.outputs.latest_libssh2 }}
           LATEST_AWSLC: ${{ steps.check-versions.outputs.latest_awslc }}
+          SHA_LIBSSH2: ${{ steps.check-versions.outputs.sha_libssh2 }}
+          SHA_AWSLC: ${{ steps.check-versions.outputs.sha_awslc }}
         run: |
           set -euo pipefail
 
           mkdir -p ThirdParty
 
-          # Modify build_libssh2.sh to clone the new version of libssh2
-          sed -i '' "s|git clone https://github.com/libssh2/libssh2.git \"\$SRC\"|git clone --branch ${LATEST_LIBSSH2} https://github.com/libssh2/libssh2.git \"\$SRC\"|g" scripts/build_libssh2.sh
-
           chmod +x scripts/*.sh
 
-          # Compile AWS-LC and libssh2
-          ./scripts/build_awslc.sh "${LATEST_AWSLC}"
-          ./scripts/build_libssh2.sh
+          # Compile AWS-LC and libssh2, pinned to the resolved commit SHAs.
+          ./scripts/build_awslc.sh "${LATEST_AWSLC}" "${SHA_AWSLC}"
+          ./scripts/build_libssh2.sh "${LATEST_LIBSSH2}" "${SHA_LIBSSH2}"
+
+          echo "Built from libssh2 $(git -C ThirdParty/src/libssh2 rev-parse HEAD), AWS-LC $(git -C ThirdParty/src/awslc rev-parse HEAD)"
 
           # Merge libraries
           libtool -static -o ThirdParty/lib/libssh2_merged.a ThirdParty/lib/libssh2.a ThirdParty/lib/libssl.a ThirdParty/lib/libcrypto.a
 
-          # Create headers
-          mkdir -p ThirdParty/libssh2kit_headers
+          # Create headers. OpenSSL headers go into an "openssl/" subdirectory:
+          # AWS-LC's compat <time.h> does #include <openssl/posix_time.h>, and
+          # a flat layout shadows the SDK's <time.h> during explicit-module builds.
+          rm -rf ThirdParty/libssh2kit_headers
+          mkdir -p ThirdParty/libssh2kit_headers/openssl
           cp ThirdParty/include/libssh2*.h ThirdParty/libssh2kit_headers/
-          cp ThirdParty/include/openssl/*.h ThirdParty/libssh2kit_headers/
+          cp ThirdParty/include/openssl/*.h ThirdParty/libssh2kit_headers/openssl/
 
           # Package framework
           rm -rf ThirdParty/libssh2kit.xcframework
@@ -171,9 +204,9 @@ jobs:
           )
           EOF
 
-          # Save version records
-          echo "${LATEST_LIBSSH2}" > upstream_libssh2.txt
-          echo "${LATEST_AWSLC}" > upstream_awslc.txt
+          # Save version records ("<tag> <sha>")
+          echo "${LATEST_LIBSSH2} ${SHA_LIBSSH2}" > upstream_libssh2.txt
+          echo "${LATEST_AWSLC} ${SHA_AWSLC}" > upstream_awslc.txt
 
           # Configure Git and push
           git config user.name "github-actions[bot]"
@@ -186,4 +219,4 @@ jobs:
           # Create Release and upload asset
           gh release create "${NEXT_PKG_VERSION}" ThirdParty/libssh2kit.xcframework.zip \
             --title "${NEXT_PKG_VERSION}" \
-            --notes "Automatically compiled with libssh2 ${LATEST_LIBSSH2} and AWS-LC ${LATEST_AWSLC}"
+            --notes "Automatically compiled with libssh2 ${LATEST_LIBSSH2} (${SHA_LIBSSH2}) and AWS-LC ${LATEST_AWSLC} (${SHA_AWSLC})"

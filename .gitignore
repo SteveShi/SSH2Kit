@@ -2,3 +2,5 @@
 /.build
 /Frameworks
 /.claude
+/.workbuddy
+SECURITY_AUDIT_*.md

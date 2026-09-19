@@ -34,7 +34,7 @@ The package is Swift 6 concurrency-safe, using the actor model throughout to ens
 - **SSHSession** (actor): Manages TCP sockets, SSH handshakes, authentication (password/public-key), terminal I/O via AsyncStream, and command execution
 - **SFTPService** (actor): Operates on an authenticated SSHSession to list directories, upload, and download files
 - **SSHAuth** (enum): `.password(String, remember: Bool)` or `.publicKey(path: String, passphrase: String?)`
-- **HostKeyStatus** (enum): `.notFound` or `.mismatch` for Known Hosts validation
+- **HostKeyStatus** (enum): `.notFound(keyFingerprint:)` or `.mismatch(keyFingerprint:)` (SHA-256 fingerprint) for Known Hosts validation
 
 ### Concurrency Model
 
@@ -78,10 +78,12 @@ libtool -static -o ThirdParty/lib/libssh2_merged.a \
   ThirdParty/lib/libssl.a \
   ThirdParty/lib/libcrypto.a
 
-# Create XCFramework
-mkdir -p ThirdParty/libssh2kit_headers
+# Create XCFramework. OpenSSL headers must go into an "openssl/" subdirectory:
+# AWS-LC's compat <time.h> does #include <openssl/posix_time.h>, and a flat
+# layout shadows the SDK's <time.h> during explicit-module builds.
+mkdir -p ThirdParty/libssh2kit_headers/openssl
 cp ThirdParty/include/libssh2*.h ThirdParty/libssh2kit_headers/
-cp ThirdParty/include/openssl/*.h ThirdParty/libssh2kit_headers/
+cp ThirdParty/include/openssl/*.h ThirdParty/libssh2kit_headers/openssl/
 xcodebuild -create-xcframework \
   -library ThirdParty/lib/libssh2_merged.a \
   -headers ThirdParty/libssh2kit_headers \
@@ -111,10 +113,10 @@ The repository uses GitHub Actions (`.github/workflows/auto_update.yml`) to auto
 
 ### Version Tracking Files
 
-- `upstream_libssh2.txt`: Current libssh2 version (e.g., `libssh2-1.11.1`)
-- `upstream_awslc.txt`: Current AWS-LC version (e.g., `v1.73.0`)
+- `upstream_libssh2.txt`: Current libssh2 version and its commit SHA (e.g., `libssh2-1.11.1 <sha>`)
+- `upstream_awslc.txt`: Current AWS-LC version and its commit SHA (e.g., `v5.9.0 <sha>`)
 
-These files are the source of truth for what's currently packaged in the binary target.
+These files are the source of truth for what's currently packaged in the binary target. The CI resolves each release tag to its commit SHA via `git ls-remote` and builds from that exact commit, so moved or rewritten tags are detected.
 
 ## Package.swift Structure
 
@@ -123,8 +125,8 @@ The `Package.swift` manifest uses Swift 6.0 tools version and targets macOS 15+.
 ```swift
 .binaryTarget(
     name: "libssh2kit",
-    url: "https://github.com/SteveShi/libssh2-swift/releases/download/v1.3.2/libssh2kit.xcframework.zip",
-    checksum: "de4e66e91190fbc812c0a9fc80e086177dd180815bc4ada912fbd9f7c8e611b5"
+    url: "https://github.com/SteveShi/SSH2Kit/releases/download/v1.3.18/libssh2kit.xcframework.zip",
+    checksum: "7b8d5769ee22be78d92a106bbd835036e87147e6d95c4f0edd64db680cdffbf5"
 )
 ```
 
