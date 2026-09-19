@@ -4,3 +4,4 @@
 /.claude
 /.workbuddy
 SECURITY_AUDIT_*.md
+/.build.partial
