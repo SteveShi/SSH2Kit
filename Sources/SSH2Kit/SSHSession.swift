@@ -17,6 +17,99 @@ public enum HostKeyFingerprint {
     }
 }
 
+/// A thread-safe cooperative-cancellation flag. Set from any thread
+/// (typically the main actor) to abort an in-flight blocking libssh2
+/// operation via the socket I/O callbacks below.
+final class SSHCancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    func cancel() {
+        lock.lock()
+        value = true
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        value = false
+        lock.unlock()
+    }
+}
+
+/// User-data handed to libssh2 via `libssh2_session_init_ex` and dereferenced
+/// by the send/recv callbacks. Must outlive the C session (held by the actor).
+final class SSHCallbackContext: @unchecked Sendable {
+    let cancelFlag: SSHCancelFlag
+    var socketFD: Int32 = -1
+
+    init(cancelFlag: SSHCancelFlag) {
+        self.cancelFlag = cancelFlag
+    }
+}
+
+// MARK: - C socket I/O callbacks
+//
+// Installed over the default libssh2 recv/send so that a cancellation request
+// can interrupt blocking-mode calls (handshake, userauth, blocking reads):
+// once the flag is set the next callback invocation fails the I/O, which
+// makes libssh2 abort with a socket error instead of blocking until timeout.
+
+private func sshkitSocketIO(
+    recv: Bool,
+    buf: UnsafeMutablePointer<UInt8>?,
+    len: Int,
+    flags: Int32,
+    abstract: UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+) -> Int {
+    guard let abstract, let ptr = abstract.pointee else {
+        errno = EIO
+        return -1
+    }
+    let context = Unmanaged<SSHCallbackContext>.fromOpaque(ptr).takeUnretainedValue()
+    if context.cancelFlag.isCancelled {
+        errno = ECANCELED
+        return -1
+    }
+    guard let buf, context.socketFD >= 0 else {
+        errno = EBADF
+        return -1
+    }
+    if recv {
+        var result: Int
+        repeat {
+            result = Darwin.recv(context.socketFD, buf, len, flags)
+        } while result < 0 && errno == EINTR
+        return result
+    } else {
+        var result: Int
+        repeat {
+            result = Darwin.send(context.socketFD, buf, len, flags)
+        } while result < 0 && errno == EINTR
+        return result
+    }
+}
+
+private let sshkitRecvCallback: @convention(c) (
+    OpaquePointer?, UnsafeMutablePointer<UInt8>?, Int, Int32,
+    UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+) -> Int = { _, buf, len, flags, abstract in
+    sshkitSocketIO(recv: true, buf: buf, len: len, flags: flags, abstract: abstract)
+}
+
+private let sshkitSendCallback: @convention(c) (
+    OpaquePointer?, UnsafeMutablePointer<UInt8>?, Int, Int32,
+    UnsafeMutablePointer<UnsafeMutableRawPointer?>?
+) -> Int = { _, buf, len, flags, abstract in
+    sshkitSocketIO(recv: false, buf: buf, len: len, flags: flags, abstract: abstract)
+}
+
 public actor SSHSession {
     public enum State: Equatable {
         case disconnected
@@ -33,6 +126,25 @@ public actor SSHSession {
     private var channel: OpaquePointer?
     private var socketFD: Int32 = -1
     private var outputContinuation: AsyncStream<Data>.Continuation?
+
+    /// Cooperative-cancellation state for in-flight blocking operations.
+    /// `cancelFlag` is accessed nonisolated so cancellation can be requested
+    /// even while the actor is blocked inside a libssh2 C call.
+    private let cancelFlag = SSHCancelFlag()
+    private var callbackContext: SSHCallbackContext?
+
+    /// Requests cancellation of any in-flight blocking operation (handshake,
+    /// userauth, blocking channel I/O). Safe to call from any thread without
+    /// awaiting the actor — that is the whole point.
+    public nonisolated func cancelActiveOperation() {
+        cancelFlag.cancel()
+    }
+
+    private func checkCancelled() throws {
+        if cancelFlag.isCancelled || Task.isCancelled {
+            throw SSHError.cancelled
+        }
+    }
 
     private var pendingHostKey: Data?
     private var pendingHostKeyType: Int32?
@@ -84,37 +196,60 @@ public actor SSHSession {
         if session != nil || socketFD != -1 {
             await disconnect()
         }
+        // A previous operation may have left the flag set (e.g. we cancelled a
+        // stuck connect right before this one) — start from a clean slate now
+        // that the actor is free.
+        cancelFlag.reset()
         state = .connecting
 
         var didInit = false
         var localFD: Int32 = -1
         var localSession: OpaquePointer? = nil
+        let context = SSHCallbackContext(cancelFlag: cancelFlag)
+        self.callbackContext = context
 
         // Cleanup helper for the failure path — frees only what we acquired locally,
         // leaves no half-initialized resources behind in `self`.
         func rollback() {
+            context.socketFD = -1
             if let s = localSession { libssh2_session_free(s) }
             if localFD != -1 { close(localFD) }
             if didInit { SSHSession.libsshExit() }
             self.session = nil
             self.socketFD = -1
+            self.callbackContext = nil
+            cancelFlag.reset()
             state = .disconnected
         }
 
         do {
+            try checkCancelled()
             localFD = try openSocket(host: host, port: port)
+            context.socketFD = localFD
+            try checkCancelled()
 
             try SSHSession.libsshInit()
             didInit = true
 
-            guard let s = libssh2_session_init_ex(nil, nil, nil, nil) else {
+            guard let s = libssh2_session_init_ex(nil, nil, nil, Unmanaged.passUnretained(context).toOpaque()) else {
                 throw SSHError.sessionInitFailed
             }
             localSession = s
+
+            // Route socket I/O through our callbacks so cancellation can
+            // interrupt the blocking handshake below.
+            let recvCB = unsafeBitCast(sshkitRecvCallback, to: UnsafeMutableRawPointer.self)
+            let sendCB = unsafeBitCast(sshkitSendCallback, to: UnsafeMutableRawPointer.self)
+            libssh2_session_callback_set(s, Int32(LIBSSH2_CALLBACK_RECV), recvCB)
+            libssh2_session_callback_set(s, Int32(LIBSSH2_CALLBACK_SEND), sendCB)
+
             libssh2_session_set_blocking(s, 1)
 
             let handshake = libssh2_session_handshake(s, localFD)
-            guard handshake == 0 else { throw SSHError.handshakeFailed(handshake) }
+            guard handshake == 0 else {
+                if cancelFlag.isCancelled || Task.isCancelled { throw SSHError.cancelled }
+                throw SSHError.handshakeFailed(handshake)
+            }
 
             // Commit to `self` only once handshake succeeded.
             self.socketFD = localFD
@@ -203,6 +338,8 @@ public actor SSHSession {
     }
 
     public func disconnect() async {
+        // Interrupt any blocking operation that is wedging the actor.
+        cancelFlag.cancel()
         outputContinuation?.finish()
         outputContinuation = nil
 
@@ -223,6 +360,10 @@ public actor SSHSession {
             close(socketFD)
             socketFD = -1
         }
+        if let context = callbackContext {
+            context.socketFD = -1
+        }
+        callbackContext = nil
 
         pendingHostKey = nil
         pendingHostKeyType = nil
@@ -232,6 +373,7 @@ public actor SSHSession {
         pendingUsername = nil
 
         SSHSession.libsshExit()
+        cancelFlag.reset()
         state = .disconnected
     }
 
@@ -322,8 +464,10 @@ public actor SSHSession {
     private func authenticateAndOpenChannel(auth: SSHAuth, cols: Int, rows: Int) async throws -> AsyncStream<Data> {
         guard let session else { throw SSHError.sessionInitFailed }
         guard let username = pendingUsername else { throw SSHError.sessionInitFailed }
+        try checkCancelled()
 
         var authenticated = tryAgentAuth(session: session, username: username)
+        try checkCancelled()
 
         if !authenticated {
             switch auth {
@@ -368,8 +512,11 @@ public actor SSHSession {
         }
 
         guard authenticated else {
+            if cancelFlag.isCancelled || Task.isCancelled { throw SSHError.cancelled }
             throw SSHError.authFailed(-16)
         }
+
+        try checkCancelled()
 
         let windowSize: UInt32 = 2 * 1024 * 1024
         let packetSize: UInt32 = 32_768
@@ -524,6 +671,7 @@ public enum SSHError: LocalizedError {
     case knownHostsWriteFailed(Int32)
     case hostKeyUnavailable
     case hostKeyNotTrusted(HostKeyStatus)
+    case cancelled
 
     public var errorDescription: String? {
         switch self {
@@ -566,6 +714,8 @@ public enum SSHError: LocalizedError {
             case .mismatch(let fingerprint):
                 return "Host key mismatch (\(fingerprint)). Confirmation required."
             }
+        case .cancelled:
+            return "Operation cancelled"
         }
     }
 }
