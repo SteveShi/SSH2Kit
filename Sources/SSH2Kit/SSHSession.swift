@@ -62,6 +62,7 @@ final class SSHCallbackContext: @unchecked Sendable {
 // makes libssh2 abort with a socket error instead of blocking until timeout.
 
 private func sshkitSocketIO(
+    socketFD: Int32,
     recv: Bool,
     buf: UnsafeMutablePointer<UInt8>?,
     len: Int,
@@ -77,14 +78,14 @@ private func sshkitSocketIO(
         errno = ECANCELED
         return -Int(ECANCELED)
     }
-    guard let buf, context.socketFD >= 0 else {
+    guard let buf, socketFD >= 0 else {
         errno = EBADF
         return -Int(EBADF)
     }
     if recv {
         var result: Int
         repeat {
-            result = Darwin.recv(context.socketFD, buf, len, flags)
+            result = Darwin.recv(socketFD, buf, len, flags)
         } while result < 0 && errno == EINTR
         if result < 0 {
             let err = errno
@@ -97,7 +98,7 @@ private func sshkitSocketIO(
     } else {
         var result: Int
         repeat {
-            result = Darwin.send(context.socketFD, buf, len, flags)
+            result = Darwin.send(socketFD, buf, len, flags)
         } while result < 0 && errno == EINTR
         if result < 0 {
             let err = errno
@@ -111,21 +112,21 @@ private func sshkitSocketIO(
 }
 
 private let sshkitRecvCallback: @convention(c) (
-    OpaquePointer?, UnsafeMutablePointer<UInt8>?, Int, Int32,
+    Int32, UnsafeMutablePointer<UInt8>?, Int, Int32,
     UnsafeMutablePointer<UnsafeMutableRawPointer?>?
-) -> Int = { _, buf, len, flags, abstract in
-    sshkitSocketIO(recv: true, buf: buf, len: len, flags: flags, abstract: abstract)
+) -> Int = { socketFD, buf, len, flags, abstract in
+    sshkitSocketIO(socketFD: socketFD, recv: true, buf: buf, len: len, flags: flags, abstract: abstract)
 }
 
 private let sshkitSendCallback: @convention(c) (
-    OpaquePointer?, UnsafeMutablePointer<UInt8>?, Int, Int32,
+    Int32, UnsafeMutablePointer<UInt8>?, Int, Int32,
     UnsafeMutablePointer<UnsafeMutableRawPointer?>?
-) -> Int = { _, buf, len, flags, abstract in
-    sshkitSocketIO(recv: false, buf: buf, len: len, flags: flags, abstract: abstract)
+) -> Int = { socketFD, buf, len, flags, abstract in
+    sshkitSocketIO(socketFD: socketFD, recv: false, buf: buf, len: len, flags: flags, abstract: abstract)
 }
 
 public actor SSHSession {
-    public enum State: Equatable {
+    public enum State: Equatable, Sendable {
         case disconnected
         case connecting
         case connected
@@ -451,9 +452,35 @@ public actor SSHSession {
     }
 
 
+    private func getAgentSocketPath() -> String? {
+        if let env = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"], !env.isEmpty {
+            return env
+        }
+        let pipe = Pipe()
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["getenv", "SSH_AUTH_SOCK"]
+        process.standardOutput = pipe
+        do {
+            try process.run()
+            process.waitUntilExit()
+            if process.terminationStatus == 0 {
+                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                if let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines), !str.isEmpty {
+                    return str
+                }
+            }
+        } catch {}
+        return nil
+    }
+
     private func tryAgentAuth(session: OpaquePointer, username: String) -> Bool {
         guard let agent = libssh2_agent_init(session) else { return false }
         defer { libssh2_agent_free(agent) }
+
+        if let socketPath = getAgentSocketPath() {
+            libssh2_agent_set_identity_path(agent, socketPath)
+        }
 
         guard libssh2_agent_connect(agent) == 0 else { return false }
         defer { libssh2_agent_disconnect(agent) }
@@ -480,18 +507,22 @@ public actor SSHSession {
         guard let username = pendingUsername else { throw SSHError.sessionInitFailed }
         try checkCancelled()
 
-        var authenticated = tryAgentAuth(session: session, username: username)
-        try checkCancelled()
+        var authenticated = false
+        var lastAuthError: Int32 = -18 // LIBSSH2_ERROR_AUTHENTICATION_FAILED
 
-        if !authenticated {
-            switch auth {
-            case .password(let password, _):
-                let userauth = libssh2_userauth_password_ex(session, username, UInt32(username.utf8.count), password, UInt32(password.utf8.count), nil)
-                if userauth == 0 {
-                    authenticated = true
-                }
+        switch auth {
+        case .password(let password, _):
+            let userauth = libssh2_userauth_password_ex(session, username, UInt32(username.utf8.count), password, UInt32(password.utf8.count), nil)
+            if userauth == 0 {
+                authenticated = true
+            } else {
+                lastAuthError = userauth
+                authenticated = tryAgentAuth(session: session, username: username)
+            }
 
-            case .publicKey(let rawPath, let passphrase):
+        case .publicKey(let rawPath, let passphrase):
+            authenticated = tryAgentAuth(session: session, username: username)
+            if !authenticated {
                 let privPath: String
                 let pubPath: String
                 if rawPath.hasSuffix(".pub") {
@@ -530,13 +561,15 @@ public actor SSHSession {
                 }
                 if userauthResult == 0 {
                     authenticated = true
+                } else {
+                    lastAuthError = userauthResult
                 }
             }
         }
 
         guard authenticated else {
             if cancelFlag.isCancelled || Task.isCancelled { throw SSHError.cancelled }
-            throw SSHError.authFailed(-16)
+            throw SSHError.authFailed(lastAuthError)
         }
 
         try checkCancelled()
