@@ -491,8 +491,17 @@ public actor SSHSession {
                     authenticated = true
                 }
 
-            case .publicKey(let path, let passphrase):
-                let pubPath = path + ".pub"
+            case .publicKey(let rawPath, let passphrase):
+                let privPath: String
+                let pubPath: String
+                if rawPath.hasSuffix(".pub") {
+                    let base = String(rawPath.dropLast(4))
+                    privPath = FileManager.default.fileExists(atPath: base) ? base : rawPath
+                    pubPath = rawPath
+                } else {
+                    privPath = rawPath
+                    pubPath = rawPath + ".pub"
+                }
                 let hasPub = FileManager.default.fileExists(atPath: pubPath)
                 // The passphrase buffer is passed to libssh2 from inside
                 // withUnsafeBufferPointer — the pointer is only valid for the
@@ -505,7 +514,7 @@ public actor SSHSession {
                             username,
                             UInt32(username.utf8.count),
                             hasPub ? pubPath : nil,
-                            path,
+                            privPath,
                             ptr.baseAddress
                         )
                     }
@@ -515,7 +524,7 @@ public actor SSHSession {
                         username,
                         UInt32(username.utf8.count),
                         hasPub ? pubPath : nil,
-                        path,
+                        privPath,
                         nil
                     )
                 }
