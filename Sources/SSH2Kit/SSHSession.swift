@@ -70,28 +70,42 @@ private func sshkitSocketIO(
 ) -> Int {
     guard let abstract, let ptr = abstract.pointee else {
         errno = EIO
-        return -1
+        return -Int(EIO)
     }
     let context = Unmanaged<SSHCallbackContext>.fromOpaque(ptr).takeUnretainedValue()
     if context.cancelFlag.isCancelled {
         errno = ECANCELED
-        return -1
+        return -Int(ECANCELED)
     }
     guard let buf, context.socketFD >= 0 else {
         errno = EBADF
-        return -1
+        return -Int(EBADF)
     }
     if recv {
         var result: Int
         repeat {
             result = Darwin.recv(context.socketFD, buf, len, flags)
         } while result < 0 && errno == EINTR
+        if result < 0 {
+            let err = errno
+            if err == EAGAIN || err == EWOULDBLOCK {
+                return -Int(EAGAIN)
+            }
+            return -Int(err)
+        }
         return result
     } else {
         var result: Int
         repeat {
             result = Darwin.send(context.socketFD, buf, len, flags)
         } while result < 0 && errno == EINTR
+        if result < 0 {
+            let err = errno
+            if err == EAGAIN || err == EWOULDBLOCK {
+                return -Int(EAGAIN)
+            }
+            return -Int(err)
+        }
         return result
     }
 }
