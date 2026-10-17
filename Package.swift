@@ -22,13 +22,9 @@ let package = Package(
   dependencies: ["libssh2kit"]
         ),
         .binaryTarget(
-            name: "libssh2kit",
-            url: "https://github.com/SteveShi/SSH2Kit/releases/download/v1.3.26/libssh2kit.xcframework.zip",
-            checksum: "143c5cb9dd4ee4288a88266a1c9408987bd534ecc7278754be99893be10d7310"
-        ),
-        .testTarget(
-            name: "SSH2KitTests",
-            dependencies: ["SSH2Kit"]
+  name: "libssh2kit",
+  url: "https://github.com/SteveShi/SSH2Kit/releases/download/v1.3.28/libssh2kit.xcframework.zip",
+  checksum: "ec094f4f3d0565d3e4405276d13b1f810d681fe74643e3746fa4958348c05f09"
         )
     ]
 )
