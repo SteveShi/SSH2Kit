@@ -21,21 +21,17 @@ permissions:
   contents: write
 
 jobs:
-  check-and-build:
-    runs-on: macos-latest
+  check-upstream:
+    runs-on: ubuntu-latest
+    outputs:
+      updates_available: ${{ steps.check-versions.outputs.updates_available }}
+      latest_libssh2: ${{ steps.check-versions.outputs.latest_libssh2 }}
+      latest_awslc: ${{ steps.check-versions.outputs.latest_awslc }}
+      sha_libssh2: ${{ steps.check-versions.outputs.sha_libssh2 }}
+      sha_awslc: ${{ steps.check-versions.outputs.sha_awslc }}
     steps:
-      - name: Checkout Swift Package
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
-
-      - name: Setup Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version: 'stable'
-
-      - name: Verify CMake
-        run: cmake --version
+      - name: Checkout Repository
+        uses: actions/checkout@v7
 
       - name: Fetch Upstream Versions
         id: check-versions
@@ -115,14 +111,31 @@ jobs:
             fi
           fi
 
+  build-and-release:
+    needs: check-upstream
+    if: needs.check-upstream.outputs.updates_available == 'true'
+    runs-on: macos-latest
+    steps:
+      - name: Checkout Swift Package
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: 'stable'
+
+      - name: Verify CMake
+        run: cmake --version
+
       - name: Compile and Release
-        if: steps.check-versions.outputs.updates_available == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          LATEST_LIBSSH2: ${{ steps.check-versions.outputs.latest_libssh2 }}
-          LATEST_AWSLC: ${{ steps.check-versions.outputs.latest_awslc }}
-          SHA_LIBSSH2: ${{ steps.check-versions.outputs.sha_libssh2 }}
-          SHA_AWSLC: ${{ steps.check-versions.outputs.sha_awslc }}
+          LATEST_LIBSSH2: ${{ needs.check-upstream.outputs.latest_libssh2 }}
+          LATEST_AWSLC: ${{ needs.check-upstream.outputs.latest_awslc }}
+          SHA_LIBSSH2: ${{ needs.check-upstream.outputs.sha_libssh2 }}
+          SHA_AWSLC: ${{ needs.check-upstream.outputs.sha_awslc }}
         run: |
           set -euo pipefail
 
